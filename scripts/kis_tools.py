@@ -42,7 +42,7 @@ class KISTools:
         deposit = int(balance.pamt.dnca_tot_amt) 
         return deposit
 
-    def get_market_data(self, code, timeframe="3"):
+    def get_market_data(self, code, timeframe="1"):
         """
         시세 및 차트 조회 (PyKis 공식 문서 기준 수정)
         timeframe: "D", "W", "M" 또는 분 단위 숫자 (기본값 "3")
