@@ -1,6 +1,5 @@
 import json
 import requests
-import threading
 import re
 import os
 from time import sleep
@@ -23,15 +22,10 @@ APP_SECRET = os.getenv("KIS_SECRETKEY")
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 # 매매 파라미터
-TARGET_PROFIT = 5.0   # 익절 목표 (%)
-STOP_LOSS = -5.0      # 손절선 (%)
-CHECK_INTERVAL = 15   # 감시 주기
-API_DELAY = 1.0       # API 유량 제한 방지 지연
-POLLING_INTERVAL = 60
-
-# 중복 실행 방지용 세트 및 락
-active_monitors = set()
-lock = threading.Lock()
+TARGET_PROFIT = 5.0
+STOP_LOSS = -5.0
+API_DELAY = 1.0       # API 유량 제한 방지 지연 (초)
+POLLING_INTERVAL = 60 # 전체 루프 주기
 
 def extract_json(text):
     match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -44,7 +38,6 @@ def safe_json_loads(text):
     except: 
         return {"action": "HOLD", "reason": "JSON 파싱 에러"}
 
-
 # ==============================
 # 🎨 콘솔 색상 정의
 # ==============================
@@ -55,30 +48,25 @@ class Color:
     CYAN = "\033[96m"
     MAGENTA = "\033[95m"
     BOLD = "\033[1m"
-    BG_GREEN = "\033[42m\033[30m" # 초록 배경, 검정 글씨
+    BG_GREEN = "\033[42m\033[30m"
     RESET = "\033[0m"
 
 # ==============================
-# 🧵 분석 및 매수 스레드 (색상 적용 버전)
+# 📈 분석 및 매수 함수 (순차 실행용)
 # ==============================
-def run_agent_thread(stock_code, kis_shared):
-    """포착된 종목 분석 및 매수 판단"""
-    with lock:
-        if stock_code in active_monitors:
-            return
-        active_monitors.add(stock_code)
-
-    print(f"{Color.CYAN}🚀 [Thread] {stock_code} 에이전트 분석 시작{Color.RESET}")
+def process_stock_analysis(stock_code, kis_shared):
+    """포착된 종목을 하나씩 분석하고 매수 판단"""
+    print(f"{Color.CYAN}🔍 [Analysis] {stock_code} 분석 시작...{Color.RESET}")
     
     try:
         kis = kis_shared
         notifier = DiscordNotifier()
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-        # 1. 시세 데이터 수집
+        # 1. 시세 데이터 수집 (API 호출 전 지연)
+        sleep(API_DELAY) 
         data = kis.get_market_data(stock_code, timeframe="1")
-        sleep(API_DELAY)
-        
+                
         rsi = calculate_rsi(data['closes'])
         recent_volumes = [int(v) for v in data['volumes'][-5:]]
         avg_volume = int(sum(data['volumes']) / len(data['volumes']))
@@ -111,131 +99,99 @@ def run_agent_thread(stock_code, kis_shared):
         action = decision.get("action", "HOLD").upper()
         reason = decision.get("reason", "No reason provided")
 
-        # --- 판단 결과 출력 (색상 적용) ---
+        # 결과 출력
         color = Color.BG_GREEN if action == "BUY" else Color.YELLOW
         print(f"{color}💡 [{stock_code}] AI 판단: {action}{Color.RESET} | 사유: {reason}")
 
-        # 3. 매수 실행 및 모니터링 전환
+        # 3. 매수 실행
         if action == "BUY":
             print(f"{Color.GREEN}{Color.BOLD}✅ [{stock_code}] 매수 주문 실행 중...{Color.RESET}")
+            sleep(API_DELAY) # 매수 주문 전 지연
             kis.buy_ten_percent(stock_code)
             notifier.send("AUTO BUY", f"✅ **매수 완료: {stock_code}**\n- RSI: {rsi:.2f}\n- 사유: {reason}")
-            
-            sleep(2)            
+            sleep(1) # 주문 후 안정화
         else:
-            print(f"{Color.YELLOW}⏳ [{stock_code}] 관망 결정 (분석 종료){Color.RESET}")
+            print(f"{Color.YELLOW}⏳ [{stock_code}] 관망 결정{Color.RESET}")
 
     except Exception as e:
-        print(f"{Color.RED}❌ [{stock_code}] 스레드 내부 에러: {e}{Color.RESET}")
-    finally:
-        with lock:
-            if stock_code in active_monitors:
-                active_monitors.remove(stock_code)
-                
-
+        print(f"{Color.RED}❌ [{stock_code}] 분석 중 에러: {e}{Color.RESET}")
 
 # ==============================
-# 🔍 조건검색 REST API 폴링
+# 🔍 조건검색 REST API
 # ==============================
 _SEARCH_TOKEN = None
 
 def get_search_token():
-    """조건검색(실전) 전용 토큰을 가져오거나 새로 발급합니다."""
     global _SEARCH_TOKEN
-    if _SEARCH_TOKEN:
-        return _SEARCH_TOKEN
+    if _SEARCH_TOKEN: return _SEARCH_TOKEN
 
-    print("[*] 검색용 실전 토큰 발급 중...")
     url = f"{BASE_URL}/oauth2/tokenP"
     body = {
         "grant_type": "client_credentials",
-        "appkey": os.getenv("KIS_APPKEY"),      # 실전 AppKey
-        "appsecret": os.getenv("KIS_SECRETKEY") # 실전 SecretKey
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET
     }
     try:
         res = requests.post(url, json=body)
-        res.raise_for_status()
         _SEARCH_TOKEN = res.json().get("access_token")
         return _SEARCH_TOKEN
     except Exception as e:
         print(f"❌ 검색 토큰 발급 실패: {e}")
         return None
 
-# ==============================
-# 🔍 조건검색 REST API 폴링 
-# ==============================
 def fetch_psearch_and_run(kis_shared):
-    """실전 토큰으로 검색하고, 포착 시 모의 객체(kis_shared)를 넘겨줌"""
-    # 1. 검색 전용 실전 토큰 확보
     token = get_search_token()
-    if not token: 
-        print("⚠️ 검색용 토큰이 없어 폴링을 건너뜁니다.")
-        return
+    if not token: return
 
     path = "/uapi/domestic-stock/v1/quotations/psearch-result"
     headers = {
         "content-type": "application/json; charset=utf-8",
         "authorization": f"Bearer {token}",
-        "appkey": os.getenv("KIS_APPKEY"),
-        "appsecret": os.getenv("KIS_SECRETKEY"),
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
         "tr_id": "HHKST03900400",
         "custtype": "P"
     }
     params = {"user_id": USER_ID, "seq": "0"}
 
-    print(f"\n[*] 조건검색 업데이트 중...")
+    print(f"\n{Color.MAGENTA}[*] 조건검색 업데이트 중...{Color.RESET}")
     try:
-        res = requests.get(f"{BASE_URL}{path}", headers=headers, params=params)
-        
-        # HTTP 에러 체크 (401, 403, 500 등)
+        res = requests.get(f"{BASE_URL}{path}", headers=headers, params=params, timeout=10)
         if res.status_code != 200:
-            print(f"❌ API 연결 실패: {res.status_code} - {res.text}")
+            print(f"❌ API 연결 실패: {res.status_code}")
             return
 
         data = res.json()
-        # 데이터 유무 확인 (안전한 필드 접근)
-        # 'output2'가 존재하고 리스트 형태인지, 비어있지는 않은지 검사
         stock_list = data.get('output2', [])
         
         if stock_list and isinstance(stock_list, list):
-            found_count = 0
+            print(f"✨ {len(stock_list)}개 종목 포착. 순차 분석을 시작합니다.")
             for stock in stock_list:
-                # stock 객체 내에 code가 없는 비정상 데이터 방어
                 code = stock.get('code')
-                name = stock.get('name', '알 수 없는 종목')
-                
-                if code and code not in active_monitors:
-                    print(f"✨ [포착] {name}({code}) 분석 스레드 생성")
-                    found_count += 1
-                    t = threading.Thread(target=run_agent_thread, args=(code, kis_shared), daemon=True)
-                    t.start()
-            
-            if found_count == 0:
-                print("ℹ️ 새로운 종목이 없습니다. (기존 종목 감시 중)")
+                if code:
+                    # 쓰레드 생성 대신 직접 함수 호출 (순차 실행)
+                    process_stock_analysis(code, kis_shared)
         else:
-            # 검색 결과가 없거나 API 메시지가 있는 경우
             msg = data.get('msg1', '조건 일치 종목 없음')
             print(f"ℹ️ {msg}")
 
     except Exception as e:
         print(f"❌ 검색 API 로직 에러: {e}")
-        
+
 # ==============================
 # 🏁 메인 루프
 # ==============================
 if __name__ == "__main__":
-    print("🚀 REST API 기반 자동매매 시스템 가동")
+    print(f"{Color.BOLD}🚀 순차 실행 방식 자동매매 시스템 가동{Color.RESET}")
     
-    # 1. KISTools 객체 생성 (프로그램 시작 시 단 1회, 토큰 발급 포함)
     main_kis = KISTools()
-    sleep(3)  # 토큰 요청 간의 간격을 벌려 403 에러 방지
+    sleep(2)
     
     try:
         while True:
-            # 2. 생성된 객체를 함수들에 공유하여 실행
             fetch_psearch_and_run(main_kis)
             
-            print(f"⏳ {POLLING_INTERVAL}초 후 재검색...")
+            print(f"\n{Color.CYAN}⏳ 한 사이클 완료. {POLLING_INTERVAL}초 대기...{Color.RESET}")
             sleep(POLLING_INTERVAL)
             
     except KeyboardInterrupt:

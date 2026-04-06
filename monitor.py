@@ -21,7 +21,7 @@ BASE_URL = "https://openapivts.koreainvestment.com:29443"  # 모의투자 URL
 TARGET_PROFIT = 5.0
 STOP_LOSS = -5.0
 CHECK_INTERVAL = 15
-API_DELAY = 1.0
+API_DELAY = 2
 
 class Color:
     GREEN = "\033[92m"; YELLOW = "\033[93m"; RED = "\033[91m"
@@ -68,7 +68,7 @@ def get_balance(token):
         "CTX_AREA_NK100": ""
     }
     
-    res = requests.get(url, headers=headers, params=params)
+    res = requests.get(url, headers=headers, params=params, timeout=10)
     data = res.json()
     
     if data.get('rt_cd') == '0':
@@ -127,7 +127,8 @@ if __name__ == "__main__":
                         # 6. 매도 판단
                         if profit_rate >= TARGET_PROFIT or profit_rate <= STOP_LOSS:
                             reason = "익절" if profit_rate >= TARGET_PROFIT else "손절"
-                            print(f"{Color.BG_GREEN}🚀 {reason} 조건 도달! 전량 매도 실행{Color.RESET}")
+                            color_msg="COLOR.GREEN" if profit_rate >= TARGET_PROFIT else "COLOR.RED"
+                            print(f"{color_msg}🚀 {reason} 조건 도달! 전량 매도 실행{Color.RESET}")
                             
                             kis.order(stock_code, qty=qty, side="sell")
                             notifier.send("AUTO SELL", f"🧪 **자동 매도 ({reason})**\n종목: {stock_name}\n수익률: {profit_rate:.2f}%")
@@ -137,11 +138,11 @@ if __name__ == "__main__":
 
             except Exception as e:
                 if "EGW00201" in str(e):
-                    print(f"{Color.RED}⚠️ 초당 호출 제한! 10초 대기...{Color.RESET}")
-                    sleep(10)
+                    print(f"{Color.RED}⚠️ 초당 호출 제한! 5초 대기...{Color.RESET}")
+                    sleep(5)
                 else:
                     print(f"{Color.RED}⚠️ 에러: {e}{Color.RESET}")
-                    sleep(5)
+                    sleep(2)
             
             print(f"\n{Color.CYAN}💤 한 사이클 완료. {CHECK_INTERVAL}초 대기...{Color.RESET}")
             sleep(CHECK_INTERVAL)
