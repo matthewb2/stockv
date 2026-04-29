@@ -4,6 +4,8 @@ import os
 import time
 from time import sleep
 from dotenv import load_dotenv
+from scripts.kis_tools import KISTools
+from scripts.notifier import DiscordNotifier
 
 load_dotenv()
 
@@ -47,6 +49,16 @@ def call_api_safe(api_func, *args, **kwargs):
     last_api_call_time = time.time()
     return api_func(*args, **kwargs)
 
+def get_kis_access_token():
+    url = f"{BASE_URL}/oauth2/tokenP"
+    payload = {
+        "grant_type": "client_credentials",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET
+    }
+    res = requests.post(url, data=json.dumps(payload))
+    return res.json().get('access_token')
+    
 # ==============================
 # 📡 직접 구현 API 함수 (라이브러리 미사용)
 # ==============================
@@ -100,7 +112,9 @@ if __name__ == "__main__":
     
     try:
         # 최초 토큰 발급
-        access_token = get_access_token()
+        access_token = get_kis_access_token()
+        kis = KISTools()
+        notifier = DiscordNotifier()
         if not access_token:
             print("❌ 토큰 발급 실패."); exit()
 
@@ -132,6 +146,17 @@ if __name__ == "__main__":
                         
                         status_color = Color.GREEN if profit_rate > 0 else Color.RED
                         print(f"📊 [{stock_name}({stock_code})] 매수가: {buy_price:,.0f} | 현재가: {curr_price:,.0f} | 수익률: {status_color}{profit_rate:.2f}%{Color.RESET}")
+                        # 매도 판단
+                        if profit_rate >= TARGET_PROFIT or profit_rate <= STOP_LOSS:
+                            reason = "익절" if profit_rate >= TARGET_PROFIT else "손절"
+                            sell_color = Color.GREEN if reason == "익절" else Color.RED
+                                    
+                            print(f"{sell_color}🚀 {reason} 조건 도달! 전량 매도 실행{Color.RESET}")
+                            kis.order(stock_code, qty=qty, side="sell")
+                            notifier.send("AUTO SELL", f"🧪 **자동 매도 ({reason})**\n종목: {stock_name}\n수익률: {profit_rate:.2f}%")
+                            
+                        # 📍 종목 간 TPS 방어용 지연 (매 루프마다 실행)
+                        sleep(1)
 
                     except Exception as e:
                         print(f"⚠️ 에러: {e}")

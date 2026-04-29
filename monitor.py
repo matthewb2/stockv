@@ -20,7 +20,7 @@ BASE_URL = "https://openapivts.koreainvestment.com:29443"
 TARGET_PROFIT = 10.0
 STOP_LOSS = -6.0
 CHECK_INTERVAL = 15
-API_DELAY = 5
+API_DELAY = 15
 
 class Color:
     GREEN = "\033[92m"
@@ -100,6 +100,8 @@ if __name__ == "__main__":
                         # 📍 [핵심 수정] try-except를 for 루프 내부로 이동
                         try:
                             stock_code = item['pdno']
+                            # 1. 현재가 조회 전 지연 (중요!)
+                            sleep(2)
                             stock_name = item['prdt_name']
                             qty = int(item['hldg_qty'])
                             
@@ -108,6 +110,7 @@ if __name__ == "__main__":
                             
                             # 데이터 조회 (에러 발생 가능 지점)
                             market_data = kis.get_market_data(stock_code)
+                            sleep(2)
                             curr_price = float(market_data['price'])
                             
                             # 수익률 계산 및 출력

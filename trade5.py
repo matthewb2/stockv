@@ -3,6 +3,7 @@ import requests
 import re
 import os
 from time import sleep
+import time
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -21,6 +22,21 @@ USER_ID = os.getenv("KIS_ID")
 APP_KEY = os.getenv("KIS_APPKEY")
 APP_SECRET = os.getenv("KIS_SECRETKEY")
 BASE_URL = "https://openapi.koreainvestment.com:9443"
+
+# ==============================
+# 🔧 설정 (실전/모의 이원화)
+# ==============================
+USER_ID = os.getenv("KIS_ID")
+# 실전 계좌 정보 (검색용)
+REAL_APP_KEY = os.getenv("KIS_APPKEY")
+REAL_APP_SECRET = os.getenv("KIS_SECRETKEY")
+REAL_URL = "https://openapi.koreainvestment.com:9443"
+
+# 모의투자 계좌 정보 (주문용)
+VTS_APP_KEY = os.getenv("KIS_VIRTUAL_APPKEY")
+VTS_APP_SECRET = os.getenv("KIS_VIRTUAL_SECRETKEY")
+VTS_ACCOUNT = os.getenv("KIS_VIRTUAL_ACCOUNT") # 예: 50000000-01
+VTS_URL = "https://openapivts.koreainvestment.com:29443"
 
 # 매매 파라미터
 TARGET_PROFIT = 10.0
@@ -52,41 +68,65 @@ class Color:
     BG_GREEN = "\033[42m\033[30m"
     RESET = "\033[0m"
 
+def call_api_safe(api_func, *args, **kwargs):
+    """모든 서버 호출 간격을 최소 3.5초로 강제 고정합니다."""
+    global last_api_call_time
+    MIN_INTERVAL = 3.5 
+    
+    current_time = time.time()
+    elapsed = current_time - last_api_call_time
+    
+    if elapsed < MIN_INTERVAL:
+        sleep(MIN_INTERVAL - elapsed)
+        
+    last_api_call_time = time.time()
+    return api_func(*args, **kwargs)
+    
 # ==============================
 # 📈 분석 및 매수 함수 (순차 실행용)
 # ==============================
-def process_stock_analysis(stock_code, kis_shared):
-    """포착된 종목을 하나씩 분석하고 매수 판단"""
+
+def get_market_data_direct(token, stock_code):
+    """실전 서버에서 차트/현재가 데이터를 직접 가져옵니다."""
+    url = f"{REAL_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}", "appkey": REAL_APP_KEY, "appsecret": REAL_APP_SECRET, "tr_id": "FHKST03010100"}
+    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": stock_code, "fid_period_div_code": "D", "fid_org_adj_prc": "1"}
+    res = requests.get(url, headers=headers, params=params)
+    out2 = res.json().get('output2', [])
+    return {
+        "stock_name": res.json().get('output1', {}).get('hts_kor_isnm', 'Unknown'),
+        "price": float(out2[0]['stck_clpr']) if out2 else 0,
+        "closes": [float(x['stck_clpr']) for x in out2[::-1]],
+        "volumes": [int(x['acml_vol']) for x in out2[::-1]]
+    }
     
+def process_stock_analysis(stock_code, token):
+    """포착된 종목을 직접 API 호출로 분석하고 매수 판단"""
     try:
-        kis = kis_shared
+        # 객체 생성은 루프 밖에서 하는 것이 효율적이나, 구조 유지를 위해 배치
         notifier = DiscordNotifier()
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-        # 1. 시세 데이터 수집 (API 호출 전 지연)
-        sleep(1) 
-        data = kis.get_market_data(stock_code, timeframe="1")
-        sleep(1) 
+        # 1. 시세 데이터 수집 (안전 래퍼 적용)
+        # kis.get_market_data 대신 직접 구현한 함수(get_market_data_direct)를 사용합니다.
+        data = call_api_safe(get_market_data_direct, token, stock_code)
+        
         stock_name = data['stock_name']        
         print(f"{Color.CYAN}🔍 [Analysis] [{stock_name}({stock_code})] 분석 시작...{Color.RESET}")
-        sleep(2)    
+        
+        # 지표 계산
         rsi = calculate_rsi(data['closes'])
         recent_volumes = [int(v) for v in data['volumes'][-5:]]
         avg_volume = int(sum(data['volumes']) / len(data['volumes']))
 
-        # 2. AI 판단 요청
+        # 2. AI 판단 요청 (Groq API는 KIS TPS와 무관하므로 바로 호출 가능)
         system_prompt = (
-            "You are an expert stock trader. Analyze the provided technical indicators and respond ONLY in JSON format. "
-            "JSON structure: {\"action\": \"BUY\" or \"HOLD\", \"reason\": \"your analysis\"}"
+            "You are an expert stock trader. Analyze technical indicators and respond ONLY in JSON. "
+            "Structure: {\"action\": \"BUY\" or \"HOLD\", \"reason\": \"...\"}"
         )
-        
         user_input = (
-            f"Analysis Request for Stock: {stock_code}\n"
-            f"- Current Price: {data['price']:,.0f} KRW\n"
-            f"- RSI (14): {rsi:.2f}\n"
-            f"- Recent 5-period Volumes: {recent_volumes}\n"
-            f"- Average Volume (30-period): {avg_volume}\n"
-            "Decision: Should I BUY or HOLD?"
+            f"Stock: {stock_code}, Price: {data['price']:,.0f}\n"
+            f"RSI: {rsi:.2f}, Volumes: {recent_volumes}, Avg: {avg_volume}"
         )
 
         response = client.chat.completions.create(
@@ -102,27 +142,21 @@ def process_stock_analysis(stock_code, kis_shared):
         action = decision.get("action", "HOLD").upper()
         reason = decision.get("reason", "No reason provided")
 
-        # 결과 출력
         color = Color.BG_GREEN if action == "BUY" else Color.YELLOW
         print(f"{color}💡 [{stock_code}] AI 판단: {action}{Color.RESET} | 사유: {reason}")
 
-        # 3. 매수 실행
+        # 3. 매수 실행 (모의투자용 토큰과 URL을 사용하여 안전하게 호출)
         if action == "BUY":
-            print(f"{Color.GREEN}{Color.BOLD}✅ [{stock_code}] 매수 주문 실행 중...{Color.RESET}")
-            sleep(API_DELAY) # 매수 주문 전 지연
-            kis.buy_ten_percent(stock_code)
-            notifier.send("AUTO BUY", f"✅ **매수 완료: {stock_code} 종목: {stock_name}**\n- RSI: {rsi:.2f}\n- 사유: {reason}")
-            sleep(1) # 주문 후 안정화
+            print(f"{Color.GREEN}✅ [{stock_code}] 매수 주문 실행 중...{Color.RESET}")
+            # kis.buy_ten_percent 대신 직접 구현한 주문 함수 사용
+            call_api_safe(execute_order_direct, vts_token, stock_code, qty=1) 
+            notifier.send("AUTO BUY", f"✅ **매수 완료: {stock_name}**\n- 사유: {reason}")
         else:
             print(f"{Color.YELLOW}⏳ [{stock_code}] 관망 결정{Color.RESET}")
 
     except Exception as e:
-            if "EGW00201" in str(e) or "초당" in str(e):
-                print(f"{Color.RED}⚠️ [{code}] TPS 초과! 2초간 긴급 휴식...{Color.RESET}")
-                sleep(2.0) # 에러 발생 시 더 길게 휴식
-            else:
-                print(f"⚠️ [{code}] 분석 중 오류: {e}")
-
+        print(f"{Color.RED}⚠️ [{stock_code}] 분석 중 오류: {e}{Color.RESET}")
+        
 # ==============================
 # 🔍 조건검색 REST API
 # ==============================
@@ -168,7 +202,7 @@ if __name__ == "__main__":
                 for code in target_codes:
                     # 2. 각 종목 순차 분석
                     sleep(1.0)
-                    process_stock_analysis(code, main_kis)
+                    process_stock_analysis(code, main_kis.token)
                     sleep(1.0) # 종목 간 안전 지연
             
             print(f"\n{Color.CYAN}⏳ 한 사이클 완료. {POLLING_INTERVAL}초 대기...{Color.RESET}")
