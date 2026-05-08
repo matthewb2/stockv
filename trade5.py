@@ -16,32 +16,8 @@ from scripts.notifier import DiscordNotifier
 load_dotenv()
 
 # ==============================
-# 🔧 설정 및 유틸리티
+# 🔧 설정 및 파라미터
 # ==============================
-USER_ID = os.getenv("KIS_ID")
-APP_KEY = os.getenv("KIS_APPKEY")
-APP_SECRET = os.getenv("KIS_SECRETKEY")
-BASE_URL = "https://openapi.koreainvestment.com:9443"
-
-# ==============================
-# 🔧 설정 (실전/모의 이원화)
-# ==============================
-USER_ID = os.getenv("KIS_ID")
-# 실전 계좌 정보 (검색용)
-REAL_APP_KEY = os.getenv("KIS_APPKEY")
-REAL_APP_SECRET = os.getenv("KIS_SECRETKEY")
-REAL_URL = "https://openapi.koreainvestment.com:9443"
-
-# 모의투자 계좌 정보 (주문용)
-VTS_APP_KEY = os.getenv("KIS_VIRTUAL_APPKEY")
-VTS_APP_SECRET = os.getenv("KIS_VIRTUAL_SECRETKEY")
-VTS_ACCOUNT = os.getenv("KIS_VIRTUAL_ACCOUNT") # 예: 50000000-01
-VTS_URL = "https://openapivts.koreainvestment.com:29443"
-
-# 매매 파라미터
-TARGET_PROFIT = 10.0
-STOP_LOSS = -6.0
-API_DELAY = 60       # API 유량 제한 방지 지연 (초)
 POLLING_INTERVAL = 60 # 전체 루프 주기
 
 def extract_json(text):
@@ -68,48 +44,24 @@ class Color:
     BG_GREEN = "\033[42m\033[30m"
     RESET = "\033[0m"
 
-def call_api_safe(api_func, *args, **kwargs):
-    """모든 서버 호출 간격을 최소 3.5초로 강제 고정합니다."""
-    global last_api_call_time
-    MIN_INTERVAL = 3.5 
-    
-    current_time = time.time()
-    elapsed = current_time - last_api_call_time
-    
-    if elapsed < MIN_INTERVAL:
-        sleep(MIN_INTERVAL - elapsed)
-        
-    last_api_call_time = time.time()
-    return api_func(*args, **kwargs)
-    
 # ==============================
-# 📈 분석 및 매수 함수 (순차 실행용)
+# 📈 분석 및 매수 함수
 # ==============================
 
-def get_market_data_direct(token, stock_code):
-    """실전 서버에서 차트/현재가 데이터를 직접 가져옵니다."""
-    url = f"{REAL_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}", "appkey": REAL_APP_KEY, "appsecret": REAL_APP_SECRET, "tr_id": "FHKST03010100"}
-    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": stock_code, "fid_period_div_code": "D", "fid_org_adj_prc": "1"}
-    res = requests.get(url, headers=headers, params=params)
-    out2 = res.json().get('output2', [])
-    return {
-        "stock_name": res.json().get('output1', {}).get('hts_kor_isnm', 'Unknown'),
-        "price": float(out2[0]['stck_clpr']) if out2 else 0,
-        "closes": [float(x['stck_clpr']) for x in out2[::-1]],
-        "volumes": [int(x['acml_vol']) for x in out2[::-1]]
-    }
-    
-def process_stock_analysis(stock_code, token):
-    """포착된 종목을 직접 API 호출로 분석하고 매수 판단"""
+def process_stock_analysis(stock_code, kis):
+    """포착된 종목을 KISTools를 사용하여 분석하고 매수 판단"""
     try:
-        # 객체 생성은 루프 밖에서 하는 것이 효율적이나, 구조 유지를 위해 배치
         notifier = DiscordNotifier()
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-        # 1. 시세 데이터 수집 (안전 래퍼 적용)
-        # kis.get_market_data 대신 직접 구현한 함수(get_market_data_direct)를 사용합니다.
-        data = call_api_safe(get_market_data_direct, token, stock_code)
+        # 0. 중복 매수 방지 (KISTools 내부의 안전 호출 사용)
+        holding_codes = kis.get_holding_codes()
+        if stock_code in holding_codes:
+            print(f"{Color.YELLOW}⚠️ [{stock_code}] 이미 잔고에 보유 중인 종목입니다. 건너뜁니다.{Color.RESET}")
+            return
+
+        # 1. 시세 데이터 수집 (KISTools 내부에서 이미 _call_api_safe가 적용됨)
+        data = kis.get_market_data(stock_code, timeframe="D")
         
         stock_name = data['stock_name']        
         print(f"{Color.CYAN}🔍 [Analysis] [{stock_name}({stock_code})] 분석 시작...{Color.RESET}")
@@ -119,7 +71,7 @@ def process_stock_analysis(stock_code, token):
         recent_volumes = [int(v) for v in data['volumes'][-5:]]
         avg_volume = int(sum(data['volumes']) / len(data['volumes']))
 
-        # 2. AI 판단 요청 (Groq API는 KIS TPS와 무관하므로 바로 호출 가능)
+        # 2. AI 판단 요청
         system_prompt = (
             "You are an expert stock trader. Analyze technical indicators and respond ONLY in JSON. "
             "Structure: {\"action\": \"BUY\" or \"HOLD\", \"reason\": \"...\"}"
@@ -145,49 +97,36 @@ def process_stock_analysis(stock_code, token):
         color = Color.BG_GREEN if action == "BUY" else Color.YELLOW
         print(f"{color}💡 [{stock_code}] AI 판단: {action}{Color.RESET} | 사유: {reason}")
 
-        # 3. 매수 실행 (모의투자용 토큰과 URL을 사용하여 안전하게 호출)
+        # 3. 매수 실행
         if action == "BUY":
             print(f"{Color.GREEN}✅ [{stock_code}] 매수 주문 실행 중...{Color.RESET}")
-            # kis.buy_ten_percent 대신 직접 구현한 주문 함수 사용
-            call_api_safe(execute_order_direct, vts_token, stock_code, qty=1) 
-            notifier.send("AUTO BUY", f"✅ **매수 완료: {stock_name}**\n- 사유: {reason}")
+            # KISTools의 buy_ten_percent 내부에 _call_api_safe가 적용되어 있습니다.
+            order_res = kis.buy_ten_percent(stock_code)
+            
+            if order_res:
+                notifier.send("AUTO BUY", f"✅ **매수 완료: {stock_name}**\n- 사유: {reason}")
         else:
             print(f"{Color.YELLOW}⏳ [{stock_code}] 관망 결정{Color.RESET}")
 
     except Exception as e:
         print(f"{Color.RED}⚠️ [{stock_code}] 분석 중 오류: {e}{Color.RESET}")
-        
-# ==============================
-# 🔍 조건검색 REST API
-# ==============================
-_SEARCH_TOKEN = None
-
-def get_search_token():
-    global _SEARCH_TOKEN
-    if _SEARCH_TOKEN: return _SEARCH_TOKEN
-
-    url = f"{BASE_URL}/oauth2/tokenP"
-    body = {
-        "grant_type": "client_credentials",
-        "appkey": APP_KEY,
-        "appsecret": APP_SECRET
-    }
-    try:
-        res = requests.post(url, json=body)
-        _SEARCH_TOKEN = res.json().get("access_token")
-        return _SEARCH_TOKEN
-    except Exception as e:
-        print(f"❌ 검색 토큰 발급 실패: {e}")
-        return None
 
 # ==============================
 # 🏁 메인 루프
 # ==============================
 if __name__ == "__main__":
-    print(f"{Color.BOLD}🚀 순차 실행 방식 자동매매 시스템 가동{Color.RESET}")
+    print(f"{Color.BOLD}🚀 KISTools 통합형 자동매매 시스템 가동{Color.RESET}")
     
+    # KISTools는 싱글톤이므로 한 번만 생성하면 내부 API 호출 시간을 공유합니다.
     main_kis = KISTools()
-    sleep(5)
+    sleep(2)
+    
+    # 환경변수 로드
+    BASE_URL = "https://openapi.koreainvestment.com:9443"
+    APP_KEY = os.getenv("KIS_APPKEY")
+    APP_SECRET = os.getenv("KIS_SECRETKEY")
+    USER_ID = os.getenv("KIS_ID")
+
     # 스캐너 객체 생성
     scanner = KISScanner(BASE_URL, APP_KEY, APP_SECRET, USER_ID)
     
@@ -196,14 +135,11 @@ if __name__ == "__main__":
             # 1. 조건검색 종목 코드 리스트 가져오기
             target_codes = scanner.fetch_psearch_stocks()
             
-            #fetch_psearch_and_run(main_kis)
             if target_codes:
-                print(f"✨ {len(target_codes)}개 종목 포착. 분석을 시작합니다.")
+                print(f"✨ {len(target_codes)}개 종목 포착. 순차 분석을 시작합니다.")
                 for code in target_codes:
-                    # 2. 각 종목 순차 분석
-                    sleep(1.0)
-                    process_stock_analysis(code, main_kis.token)
-                    sleep(1.0) # 종목 간 안전 지연
+                    # 2. 각 종목 분석 함수 호출 (KISTools 인스턴스 전달)
+                    process_stock_analysis(code, main_kis)
             
             print(f"\n{Color.CYAN}⏳ 한 사이클 완료. {POLLING_INTERVAL}초 대기...{Color.RESET}")
             sleep(POLLING_INTERVAL)

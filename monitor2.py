@@ -104,6 +104,34 @@ def get_balance(token):
     data = res.json()
     return data.get('output1', []) if data.get('rt_cd') == '0' else []
 
+def sell_stock_native(token, stock_code, qty):
+    """라이브러리 없이 네이티브 API로 시장가 매도 주문을 실행합니다."""
+    path = "/uapi/domestic-stock/v1/trading/order-cash"
+    url = f"{BASE_URL}{path}"
+    
+    # 모의투자 매도 tr_id: VTTC0801U (매수와 다름)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "VTTC0801U",  # 국내주식 모의투자 매도 주문
+        "custtype": "P",
+        "hashkey": "" # 해쉬키는 생략 가능하나 보안상 필요시 추가 가능
+    }
+    
+    payload = {
+        "CANO": ACCOUNT_FRONT,
+        "ACNT_PRDT_CD": ACCOUNT_BACK,
+        "PDNO": stock_code,
+        "ORD_DVSN": "01",      # 01: 시장가
+        "ORD_QTY": str(qty),   # 주문 수량 (문자열)
+        "ORD_UNPR": "0",       # 시장가는 가격 0
+    }
+    
+    res = requests.post(url, headers=headers, data=json.dumps(payload))
+    return res.json()
+    
 # ==============================
 # 🏁 메인 실행 로직
 # ==============================
@@ -151,8 +179,17 @@ if __name__ == "__main__":
                             reason = "익절" if profit_rate >= TARGET_PROFIT else "손절"
                             sell_color = Color.GREEN if reason == "익절" else Color.RED
                                     
-                            print(f"{sell_color}🚀 {reason} 조건 도달! 전량 매도 실행{Color.RESET}")
-                            kis.order(stock_code, qty=qty, side="sell")
+                            print(f"{sell_color}🚀 {reason} 조건 도달! 네이티브 전량 매도 실행{Color.RESET}")
+                            
+                            # 📍 네이티브 함수 호출 (kis.order 대체)
+                            order_res = call_api_safe(sell_stock_native, access_token, stock_code, qty)
+                            
+                            if order_res.get('rt_cd') == '0':
+                                print(f"{Color.GREEN}✅ 매도 주문 성공: {order_res.get('msg1')}{Color.RESET}")
+                                notifier.send("AUTO SELL", f"🧪 **네이티브 자동 매도 ({reason})**\n종목: {stock_name}\n수익률: {profit_rate:.2f}%")
+                            else:
+                                print(f"{Color.RED}❌ 매도 주문 실패: {order_res.get('msg1')}{Color.RESET}")
+                                
                             notifier.send("AUTO SELL", f"🧪 **자동 매도 ({reason})**\n종목: {stock_name}\n수익률: {profit_rate:.2f}%")
                             
                         # 📍 종목 간 TPS 방어용 지연 (매 루프마다 실행)
