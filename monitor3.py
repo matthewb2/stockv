@@ -177,7 +177,7 @@ if __name__ == "__main__":
                         # 매도 판단
                         if profit_rate >= TARGET_PROFIT or profit_rate <= STOP_LOSS:
                             reason = "익절" if profit_rate >= TARGET_PROFIT else "손절"
-                            sell_color = Color.YELLO if reason == "익절" else Color.RED
+                            sell_color = Color.YELLOW if reason == "익절" else Color.RED
                                     
                             print(f"{sell_color}🚀 {reason} 조건 도달! 네이티브 전량 매도 실행{Color.RESET}")
                             

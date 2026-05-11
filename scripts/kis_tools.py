@@ -42,41 +42,23 @@ class KISTools:
         deposit = int(balance.pamt.dnca_tot_amt) 
         return deposit
 
-    def get_market_data(self, code, timeframe="1"):
-        """
-        시세 및 차트 조회 (PyKis 공식 문서 기준 수정)
-        timeframe: "D", "W", "M" 또는 분 단위 숫자 (기본값 "3")
-        """
+    def get_market_data(self, code):
+        
         stock = self.api.stock(code)
-        sleep(2) 
-        
+        sleep(1)         
         # 1. 현재가 조회 (호가 정보)
-        quote = stock.quote()
-        
+        quote = stock.quote()        
         sleep(1) 
         current_price = quote.price
         stock_name = quote.name
         
         # 2. 차트 데이터 조회 (공식 문서 방식 적용)
         try:
-            if timeframe == "D":
-                chart = stock.chart()  # 기본값 일봉
-            elif timeframe == "W":
-                chart = stock.chart(period="week")
-            elif timeframe == "M":
-                chart = stock.chart(period="month")
-            else:
-                # timeframe이 숫자 형태("1", "3", "5")일 경우 당일 분봉 조회
-                # 예: stock.chart(period=3) -> 당일 3분봉
-                chart = stock.chart(period=int(timeframe))
-            
+            chart = stock.chart(period=3)   #3분봉 조회         
             bars = list(chart)
         except Exception as e:
             print(f"⚠️ 차트 데이터 조회 중 오류: {e}")
-            # 예외 발생 시 안전하게 일봉으로 폴백
-            chart = stock.chart()
-            bars = list(chart)
-        
+            
         if not bars:
             raise ValueError(f"{code}의 차트 데이터를 불러오지 못했습니다.")
 
@@ -104,7 +86,7 @@ class KISTools:
                 qty = 0
                 
             if qty > 0:
-                print(f"총 매수 가능 금액({total_orderable_amount:,}원)의 10%인 {target_budget:,}원 규모로 {qty}주 매수를 진행합니다.")
+                print(f"총 매수 가능 금액({total_orderable_amount:,.0f}원)의 10%인 {target_budget:,.0f}원 규모로 {qty}주 매수를 진행합니다.")
                 return self.order(code, qty, side="buy")
             else:
                 print(f"매수 가능 수량이 부족합니다. (계산된 수량: {qty}주)")
