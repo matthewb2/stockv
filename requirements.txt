@@ -1,0 +1,9 @@
+python-dotenv
+python-kis
+openai
+groq
+pandas
+requests
+numpy
+scikit-learn
+hmmlearn
