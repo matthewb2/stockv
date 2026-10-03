@@ -88,10 +88,13 @@ from market_regime import (  # noqa: F401
     min_training_bars,
     prepare_3m_frame,
 )
+from scripts.chart_fetch import fetch_ticker_3m_data  # noqa: F401
 from scripts.chart_store import ChartDB, current_trade_date, open_store
+from scripts.console_color import Color
 from scripts.kis_native import KISNative
 from scripts.notifier import build_notifier
 from scripts.scanner import KISScanner
+from trade_execution import MIN_BUY_AMOUNT, execute_trade_logic  # noqa: F401
 
 load_dotenv()
 
@@ -105,7 +108,7 @@ DEFAULT_SEQ = 0              # 조건검색식 번호 (0 = 1번 조건식)
 AMOUNT_RATE = 0.10           # 종목당 매수 자금 비율 (예수금의 10%)
 STOP_LOSS_PCT = -1.2         # 손절 기준 (%)
 TAKE_PROFIT_PCT = 1.5        # 익절 기준 (%)
-MIN_BUY_AMOUNT = 10_000      # 최소 주문 금액
+# MIN_BUY_AMOUNT 은 trade_execution 에서 쓰인다 (매수 실행 로직과 함께 이동)
 
 # 전략은 시장 국면 판정 결과로 선택한다. (2종)
 #   시장 상승             → 액티브 전략  : 개별종목을 VWMA 모델로 판별, 매수 허용
@@ -136,7 +139,7 @@ MARKET_LABEL = {
     "KOSPI": "코스피",
     "KOSDAQ": "코스닥",
 }
-MAX_CODES = 30               # 사이클당 분석 종목 수 (거래대금 상위)
+MAX_CODES = 3               # 사이클당 분석 종목 수 (거래대금 상위)
 
 # KRX 정보데이터 시세 파일(cp949). 각 줄의 첫 필드가 종목코드다.
 MARKET_FILES = {
@@ -168,20 +171,6 @@ def market_settings(market):
 
 
 # ==============================
-# 🎨 콘솔 색상 정의
-# ==============================
-class Color:
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    RED = "\033[91m"
-    CYAN = "\033[96m"
-    MAGENTA = "\033[95m"
-    BOLD = "\033[1m"
-    BG_GREEN = "\033[42m\033[30m"
-    RESET = "\033[0m"
-
-
-# ==============================
 # 🏦 거래 컨텍스트
 # ==============================
 @dataclass
@@ -207,27 +196,6 @@ class TradingContext:
 # ==============================
 # 📈 주식 데이터 수집
 # ==============================
-def fetch_ticker_3m_data(kis, ticker):
-    """KIS 3분봉 조회 → 정방향 DataFrame(과거→최신)"""
-    try:
-        response = kis.get_3m_chart(ticker)
-        if not response:
-            print(f"{Color.YELLOW}⚠️ [{ticker}] 3분봉 데이터가 없습니다.{Color.RESET}")
-            return pd.DataFrame()
-
-        # API는 최신순(행0=현재 봉)으로 내려준다 → 시간 오름차순으로 뒤집기
-        df = pd.DataFrame(response).iloc[::-1].reset_index(drop=True)
-
-        for col in ('open', 'high', 'low', 'close', 'volume'):
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        df = df.dropna(subset=['close', 'volume'])
-        return df.sort_values('time').reset_index(drop=True)
-    except Exception as e:
-        print(f"{Color.RED}⚠️ [{ticker}] 3분봉 조회 실패: {e}{Color.RESET}")
-        return pd.DataFrame()
-
-
 def fetch_stock_3m_data(kis, ticker, store, min_bars=min_training_bars()):
     """3분봉 조회 후 로컬 저장소에 누적하고 누적 DataFrame 반환
 
@@ -377,68 +345,6 @@ def stock_model_for_strategy(strategy):
 def get_current_price(native, ticker):
     """실전 계좌 현재가 조회"""
     return float(native.get_price(ticker)['price'])
-
-
-def execute_trade_logic(ticker, curr_price, regime, ctx, allow_buy=True):
-    """개별종목 국면 판정에 따라 매수/매도 실행
-
-    Downtrend → 매도, Uptrend → 매수, Sideways/None → 관망
-
-    allow_buy 가 False 이면 시장 국면이 상승장이 아니므로 매수하지 않고
-    보유분을 유지한다 (매도 트리거는 allow_buy 과 무관하게 동작한다).
-    """
-    try:
-        balance = ctx.paper.get_balance(ticker)
-        avg_price = ctx.paper.avg_buy_price.get(ticker, curr_price)
-        if avg_price is None or avg_price <= 0:
-            avg_price = curr_price
-        pnl_pct = ((curr_price - avg_price) / avg_price) * 100
-        name = ctx.stock_name(ticker)
-
-        # 1. 하락 국면 → 보유분 매도
-        if regime == REGIME_DOWNTREND:
-            if balance > 0:
-                print(f"📉 [{name}({ticker})] 하락 국면 감지! 매도 진행 "
-                      f"(수익률 {pnl_pct:+.2f}%)")
-                order_res = ctx.paper.sell_market_order(ticker, curr_price)
-                if order_res:
-                    msg = (f"🔴 **[RSI 국면 하락 매도]**\n"
-                           f"종목: {name}({ticker})\n"
-                           f"수익률: {order_res['pnl_pct']:+.2f}% ({order_res['pnl_krw']:,.0f}원)")
-                    ctx.notifier.send("PAPER SELL", msg)
-            return
-
-        # 2. 횡보/판단 불가 → 매매 없음
-        if regime != REGIME_UPTREND:
-            print(f"⏳ [{name}({ticker})] 횡보 또는 판단 보류 상태로 관망합니다.")
-            return
-
-        # 3. 시장 국면이 상승이 아니면 신규 매수 보류
-        if not allow_buy:
-            print(f"⏸️ [{name}({ticker})] 종목은 상승 국면이나 시장 국면이 상승이 "
-                  f"아니라 신규 매수를 보류합니다.")
-            return
-
-        # 4. 상승 국면 → 매수 검토
-        if balance > 0:
-            return
-
-        krw_balance = ctx.paper.get_balance("KRW")
-        buy_amount = krw_balance * ctx.amount_rate
-
-        if buy_amount <= MIN_BUY_AMOUNT:
-            print(f"⚠️ 현금 잔고 부족으로 {name}({ticker}) 매수 불가 (목표액 {buy_amount:,.0f}원)")
-            return
-
-        order_res = ctx.paper.buy_market_order(ticker, buy_amount, curr_price)
-        if order_res:
-            print(f"✅ [{name}({ticker})] 모의 매수 {order_res['qty']}주 @ {curr_price:,.0f}원")
-            msg = (f"✅ **[RSI 국면 상승 매수]**\n"
-                   f"종목: {name}({ticker})\n"
-                   f"매수금액: {order_res['total']:,.0f}원")
-            ctx.notifier.send("PAPER BUY", msg)
-    except Exception as e:
-        print(f"{Color.RED}❌ 매매 실행 에러 ({ticker}): {e}{Color.RESET}")
 
 
 # ==============================
@@ -676,3 +582,5 @@ def main(argv=None, market="KOSPI", seq=None, max_codes=None):
         print("\n[운영 중단] 시스템을 종료합니다.")
     finally:
         ctx.paper.get_status()
+        # SQLite 는 파일 락을 잡으므로 종료 전에 연결을 닫아 준다
+        ctx.store.close()
