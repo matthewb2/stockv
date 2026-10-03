@@ -12,20 +12,22 @@ KOSPI/KOSDAQ 공통으로 쓰는 순수 분석 로직만 담는다.
         Feature2 = log(거래량/거래량MA20) : 거래량 급증·둔화
 
     개별 종목 국면 (analyze_stock_regime, model 인자로 분기)
-        MODEL_VWMA      : 단기/장기 VWMA 스프레드의 부호 + 지속성 + 크기 게이트
+        MODEL_VWMA      : VWMA 3-State HMM (가격추세 + 다이버전스)
         MODEL_MACD      : MACD 라인의 부호 + 지속성 + 크기 게이트
         MODEL_RSI_VOLUME: RSI + 거래량 3-State HMM
 
     시장 국면 (analyze_market_regime) 은 항상 MODEL_RSI_VOLUME HMM 을 쓴다.
 
-    VWMA / MACD 를 HMM 으로 돌리면 3-군집이 형성되지 않아(실측 최소 평균
-    간격 0.01~0.16) 상태 정렬이 역전된다. 그래서 이 둘은 규칙 기반으로 판별한다.
+    VWMA 는 HMM 을 사용한다. 단일 VWMA 스프레드는 단봉 지표라 3-군집이
+    안 잡히지만, 가격 변화량과 VWMA 변화량의 차이(다이버전스)를 두 축으로
+    쓰면 3상태가 분리되고 수렴한다(실측 27/27 종목 수렴).
+    참고: MACD 는 지표 부호 규칙 경로를 유지한다.
 
 공개 함수
     analyze_stock_regime  : 개별종목의 상승/횡보/하락 판별 (model 선택)
     analyze_market_regime : 시장 국면 판별 (RSI+거래량 HMM, 대표종목 적용)
-    classify_3state       : 3-State HMM 국면 분류 (시장 판별용)
-    classify_by_threshold : 지표 부호 규칙 국면 분류 (VWMA / MACD 용)
+    classify_3state       : 3-State HMM 국면 분류 (VWMA / 시장 판별용)
+    classify_by_threshold : 지표 부호 규칙 국면 분류 (MACD 용)
     prepare_3m_frame      : 거래량 0 채움 봉 제거
     calculate_rsi         : Wilder RSI
     calculate_volume_ratio: 거래량 상대비
@@ -56,6 +58,12 @@ HMM_3STATE_VOLUME_MA = 20          # 거래량 이동평균 기간
 HMM_3STATE_MIN_BARS = 120          # 유효 3분봉 최소 봉 수 (학습 60봉 + 워밍업 20봉)
 HMM_3STATE_MIN_ROWS = 60           # dropna 이후 학습 최소 행 수
 HMM_3STATE_MIN_PER_STATE = 5       # 상태별 최소 봉 수 (미달 시 판정 보류)
+HMM_3STATE_MIN_PER_STATE_PER_MODEL = {
+    # VWMA 는 3-군집이 또렷이 분리되지만(분리도 0.8~3.5) 한 국면이 짧게 지나가
+    # 표본 7개에 못 미칠 수 있다. 분리도가 충분하면 라벨은 확실하므로
+    # 최소 봉 수를 낮춰 판정을 살린다.
+    "vwma": 2,
+}
 HMM_3STATE_MIN_STATE_RATIO = 0.05  # 상태별 최소 비중 (전체 봉의 5% 미만이면 보류)
 
 VWMA_WINDOW = 20                    # VWMA 기간 (기준선)
@@ -66,28 +74,68 @@ MACD_SLOW = 26                      # MACD 장기 EMA
 MACD_SIGNAL = 9                     # MACD 시그널 EMA
 HMM_3STATE_MIN_STATE_SEPARATION = 0.15  # 상태 평균 간 최소 거리 (표준화 공간)
 """3-State HMM 은 데이터에 실제로 3개 군집이 있을 때만 의미가 있다.
-피처가 단봉 형태라 군집이 분리되지 않으면 상태 평균이 겹치고,
-정렬 기반 라벨링이 정반대로 뒤집힌다(강세 봉을 약세로 오인).
-이 경우 판별을 보류한다.
+상태 평균이 겹치면 정렬 기반 라벨링이 뒤집힌다(강세 봉을 약세로 오인).
 
-실측(표준화 공간 최소 평균 간격):
-    RSI+거래량 모델 : 0.18 ~ 1.73  → 정상 분리 (시장 판별로 사용)
-    VWMA / MACD    : 0.01 ~ 0.16  → 3-군집 미형성 → 임계값 규칙으로 대체
+분리도는 '수렴 여부'가 아니라 '라벨링 신뢰도'만 검증한다.
+실측(kospi_chart.db, 27개 학습 가능 종목, 표준화 공간 최소 평균 간격):
+    RSI+거래량 : 0.18 ~ 1.73
+    VWMA      : 0.01 ~ 0.86 (중앙 0.17)
+VWMA 는 분산이 크지만 HMM 은 100% 수렴하고 상태도 3개 모두 채워진다.
+평균이 가까운 일부 구간에서만 라벨이 모호해지므로, 그때는 판정을 보류한다.
 """
 
 # VWMA / MACD 는 지표 부호 규칙으로 판별한다 (HMM 은 3-군집을 만들지 못함)
 REGIME_LOOKBACK = 3            # 부호가 연속 유지되어야 하는 봉 수
 REGIME_MAGNITUDE_GATE_K = 0.5  # 판정에 필요한 최소 크기 (해당 지표 표준편차 배수)
 
+# VWMA HMM 피처 설정
+VWMA_HMM_WINDOW = 12   # 가격추세/다이버전스 계산에 쓰는 봉 간격
+VWMA_HMM_FAST = 5      # VWMA 모멘텀 계산용 단기 VWMA 기간
+"""VWMA 를 HMM 으로 판별할 때 쓰는 피처 조합.
+
+단순 VWMA 스프레드는 단봉 지표라 3-군집이 되지 않는다(평균이 거의 겹친다).
+그래서 '가격 변화량'과 'VWMA 변화량의 차이(다이버전스)' 를 쓴다.
+  Price_Trend = close.diff(12)          → 추세 방향·크기
+  Div_Score   = vwma.diff(12) - 위 값   → 거래량 가중 평균이 가격보다
+                                          얼마나 앞서는지(다이버전스)
+두 축이 서로 다른 정보를 담으므로 3상태가 실제로 분리되고 수렴한다.
+실측: 27/27 종목 수렴, 상태 3개 모두 배정됨.
+"""
+
+# 모델별 분리도 하한. 시장(RSI+거래량) 모델은 실제로 3-군집이 잘 분리된다.
+# VWMA 는 두 피처의 스케일이 종목마다 달라 동일 기준이 과도하다.
+# 정답지 있는 합성 데이터 29종목 측정: 분리도와 위험오판(하락→상승)의
+# 상관 r=+0.26 으로 사실상 무관하고, 분리도 0.02 미만 구간이 오히려
+# 위험오판이 가장 낮았다(4.6%). 즉 이 게이트는 위험을 걸러내지 못하고
+# 판정률만 깎는다(실전 0.05→77%, 0.02→80%).
+# 그래도 HMM 이 퇴화한 해를 막는 안전 최저선으로 아주 작은 값만 유지한다.
+HMM_3STATE_MIN_SEPARATION_PER_MODEL = {
+    "rsi_volume": 0.15,
+    "vwma": 0.02,
+}
+
+# 상태 정렬에 쓸 Feature 인덱스. 정답지 있는 국면 전환형 합성 데이터
+# 기준 Feature1(가격추세) 이 유일하게 저위험이었다. Feature2(다이버전스) 로
+# 정렬하면 하락을 상승으로 보는 비율이 최대 80% 까지 올라간다.
+REGIME_SORT_AXIS = {
+    "rsi_volume": 0,
+    "vwma": 0,
+}
+
+HMM_MIN_CONFIDENCE = 0.45  # 다음봉 상태 확률 하한 (미달이면 횡보로 간주)
+
 # ==============================
 # 📊 국면 상수
 # ==============================
-REGIME_UPTREND = "Uptrend"        # 상승 → 매수
-REGIME_SIDEWAYS = "Sideways"      # 횡보 → 관망
-REGIME_DOWNTREND = "Downtrend"    # 하락 → 매도
+# 주의: HMM 라벨은 절대가락이 아니라 '해당 종목 최근 분포 대비 상대 위치'
+#       다. Downtrend 는 '지금 하락 중' 이 아니라 '상장 중 상대 약화'
+#       (=모멘텀 둔화) 를 뜻하며, 가격이 오르는 중에도 나올 수 있다.
+REGIME_UPTREND = "Uptrend"        # 상대 강세 → 매수
+REGIME_SIDEWAYS = "Sideways"      # 중립 → 관망
+REGIME_DOWNTREND = "Downtrend"    # 상대 약화 → 매도
 
 # 개별 종목 판별에 사용할 모델
-MODEL_VWMA = "vwma"               # 액티브 전략 — 단기/장기 VWMA 스프레드
+MODEL_VWMA = "vwma"               # 액티브 전략 — VWMA 3-State HMM
 MODEL_MACD = "macd"               # 보수적 전략 — MACD 라인 부호
 MODEL_RSI_VOLUME = "rsi_volume"   # 시장 판별과 동일 (RSI + 거래량)
 
@@ -234,10 +282,32 @@ def build_features_rsi_volume(work):
     return work
 
 
-# VWMA / MACD 는 HMM 으로 판별하지 않는다. 지표 수열에서 3-군집이
-# 분리되지 않아 상태 정렬이 역전되므로 REGIME_INDICATORS 규칙 경로를 쓴다.
+def build_features_vwma(work):
+    """VWMA 가격추세 + 다이버전스 (액티브 전략 종목 판별 모델)
+
+    단일 VWMA 스프레드는 단봉 지표라 3-군집이 되지 않아 HMM 라벨이 뒤집힌다.
+    가격 변화량과 VWMA 변화량의 차이를 두 축으로 쓰면 3상태가 실제로 분리된다.
+
+    라벨은 절대가락이 아니라 '해당 종목 최근 분포 대비 상대 위치' 다.
+    Uptrend/Downtrend 는 각각 '상대 강세/상대 약화' 를 뜻하므로, 가격이
+    오르는 중에도 Downtrend 가 나올 수 있다. 이는 모멘텀 둔화 신호로
+    의도된 동작이며 추세 추종 지표가 아니다.
+    """
+    vwma = calculate_vwma(work["close"], work["volume"], VWMA_HMM_FAST)
+    price_trend = work["close"].diff(VWMA_HMM_WINDOW)
+    vwma_trend = vwma.diff(VWMA_HMM_WINDOW)
+
+    work["d_VWMA"] = vwma
+    work["d_PriceTrend"] = price_trend
+    work["d_DivScore"] = vwma_trend - price_trend
+    work["Feature1"] = price_trend
+    work["Feature2"] = work["d_DivScore"]
+    return work
+
+
 FEATURE_BUILDERS = {
     MODEL_RSI_VOLUME: build_features_rsi_volume,
+    MODEL_VWMA: build_features_vwma,
 }
 
 
@@ -270,18 +340,14 @@ def calculate_macd_indicator(close, volume=None):
     return macd_line / close.replace(0, np.nan) * 100.0
 
 
-# 임계값 규칙을 쓰는 모델별 지표
+# 임계값 규칙을 쓰는 모델별 지표 (MACD 만 사용 — VWMA 는 HMM 경로)
 REGIME_INDICATORS = {
-    MODEL_VWMA: calculate_vwma_indicator,
     MODEL_MACD: calculate_macd_indicator,
 }
 
 
-def classify_by_threshold(ticker, df, scope="종목", model=MODEL_VWMA):
-    """지표 부호 + 지속성 + 크기 게이트로 3국면 판별
-
-    HMM 은 지표 수열에서 3-군집을 만들지 못해 상태 정렬이 무의미해진다
-    (강세 봉이 약세로 뒤집힘). 그래서 규칙 기반으로 판별한다.
+def classify_by_threshold(ticker, df, scope="종목", model=MODEL_MACD):
+    """지표 부호 + 지속성 + 크기 게이트로 3국면 판별 (MACD 용)
 
       1) 최근 REGIME_LOOKBACK 봉의 부호가 모두 같아야 하고
       2) 그 크기가 해당 지표 표준편차의 REGIME_MAGNITUDE_GATE_K 배 이상이어야 한다.
@@ -338,6 +404,9 @@ def classify_by_threshold(ticker, df, scope="종목", model=MODEL_VWMA):
 def classify_3state(ticker, df, scope="종목", model=MODEL_RSI_VOLUME):
     """3-State HMM 국면 분류 공통 로직
 
+    후행성 제거: 마지막 봉의 상태(hidden_states[-1])는 '지금까지 벌어진' 결과라
+    매수 판단에 1봉 늦다. 전이확률을 한 번 곱해 '다음 봉 상태'를 추정한다.
+
     df: 3분봉 누적 DataFrame (거래량 0 채움 봉 포함 가능)
     model: MODEL_VWMA / MODEL_MACD / MODEL_RSI_VOLUME 중 하나
     return: REGIME_UPTREND / REGIME_SIDEWAYS / REGIME_DOWNTREND / None
@@ -370,9 +439,24 @@ def classify_3state(ticker, df, scope="종목", model=MODEL_RSI_VOLUME):
 
         stds = np.std(X, axis=0)
         if np.any(stds == 0.0):
+            # 전부 평탄하면 추세가 없다는 뜻이므로 3-상태 HMM 을 돌릴
+            # 필요가 없다. 보류(None) 가 아니라 횡보를 직접 준다.
+            if np.all(stds == 0.0):
+                print(f"➡️ [{ticker}] {model} 모든 피처가 평탄 → 횡보 처리")
+                return REGIME_SIDEWAYS
             print(f"⏳ [{ticker}] {model} 피처 중 변동이 0인 컬럼이 있어 "
                   f"국면 판별을 보류합니다.")
             return None
+
+        # 전체 변동이 있어도 최근 구간이 평탄하면(장 마감 후 거래정지 등)
+        # 그 평탄 봉이 임의의 군집에 배정되어 국면을 거꾸로 읽는다.
+        # 판정에 쓰는 것은 마지막 봉이므로 최근 구간 변동을 확인한다.
+        recent = X[-HMM_3STATE_MIN_PER_STATE_PER_MODEL.get(
+            model, HMM_3STATE_MIN_PER_STATE):]
+        if np.all(np.std(recent, axis=0) == 0.0):
+            print(f"➡️ [{ticker}] {model} 최근 {len(recent)}봉 피처가 평탄 "
+                  f"→ 횡보 처리")
+            return REGIME_SIDEWAYS
 
         # 피처 스케일이 1e-6 수준이면 3상태가 구분되지 않아 상태가 붕괴한다.
         # 표준화 후 HMM에 넣는다.
@@ -382,11 +466,14 @@ def classify_3state(ticker, df, scope="종목", model=MODEL_RSI_VOLUME):
                                 n_iter=2000, random_state=42)
         hmm_model.fit(X_scaled)
 
-        # Feature1 평균값 순으로 상태 정렬 (높을수록 강세)
-        sorted_states = np.argsort(hmm_model.means_[:, 0])
-        down_state = sorted_states[0]       # Feature1이 가장 낮은 약세
+        # 상태 정렬 기준은 REGIME_SORT_AXIS 가 밝힌 정렬 축을 쓴다.
+        # 정답지 있는 합성 데이터 검증 결과 Feature1(가격추세) 정렬만
+        # 저위험이었다. 표준화 공간의 means_ 순서를 그대로 믿으면 안 된다.
+        sort_axis = REGIME_SORT_AXIS.get(model, 0)
+        sorted_states = np.argsort(hmm_model.means_[:, sort_axis])
+        down_state = sorted_states[0]       # 정렬 축이 가장 낮은 약세
         sideways_state = sorted_states[1]   # 중립 (횡보)
-        up_state = sorted_states[2]         # Feature1이 가장 높은 강세
+        up_state = sorted_states[2]         # 정렬 축이 가장 높은 강세
 
         state_mapping = {
             up_state: REGIME_UPTREND,
@@ -400,13 +487,21 @@ def classify_3state(ticker, df, scope="종목", model=MODEL_RSI_VOLUME):
         gaps = [float(np.linalg.norm(means[i] - means[j]))
                 for i in range(3) for j in range(i + 1, 3)]
         min_gap = min(gaps)
-        if min_gap < HMM_3STATE_MIN_STATE_SEPARATION:
+        min_gap_required = HMM_3STATE_MIN_SEPARATION_PER_MODEL.get(
+            model, HMM_3STATE_MIN_STATE_SEPARATION)
+        if min_gap < min_gap_required:
             print(f"⚠️ [{ticker}] {model} 3-상태 분리도 부족 "
                   f"(최소 간격 {min_gap:.2f} < "
-                  f"{HMM_3STATE_MIN_STATE_SEPARATION}). 국면 판별을 보류합니다.")
+                  f"{min_gap_required}). 국면 판별을 보류합니다.")
             return None
 
         hidden_states = hmm_model.predict(X_scaled)
+
+        # 후행성 제거: 현재 봉 상태가 아니라 전이확률로 추정한 다음 봉 상태를 쓴다.
+        current_probs = hmm_model.predict_proba(X_scaled)
+        next_step_probs = np.dot(current_probs, hmm_model.transmat_)
+        predicted_state = int(np.argmax(next_step_probs[-1]))
+        confidence = float(next_step_probs[-1][predicted_state])
 
         # 빈 상태 처리: HMM이 봉을 배정하지 않은 상태가 있으면 그 상태의
         # means_ 는 추정이 아니므로 배정을 신뢰할 수 없다.
@@ -419,21 +514,34 @@ def classify_3state(ticker, df, scope="종목", model=MODEL_RSI_VOLUME):
                   f"(분포={counts.tolist()}). 국면 판별을 보류합니다.")
             return None
 
-        # 모든 상태가 최소 봉 수와 최소 비중을 갖는지 확인
-        min_required = max(HMM_3STATE_MIN_PER_STATE,
-                           int(len(work) * HMM_3STATE_MIN_STATE_RATIO))
-        if counts.min() < min_required:
-            print(f"⚠️ [{ticker}] 특정 상태의 봉이 {min_required}개 미만 "
-                  f"(분포={counts.tolist()}, 학습 {len(work)}봉). 국면 판별을 보류합니다.")
+        # 모든 상태가 최소 봉 수를 갖는지 확인한다.
+        min_per_state = HMM_3STATE_MIN_PER_STATE_PER_MODEL.get(
+            model, HMM_3STATE_MIN_PER_STATE)
+        # 판정에 실제로 쓰이는 predicted_state 가 학습된 상태일 때만 국면을
+        # 신뢰한다. 쓰지 않는 소수 상태가 작아도 예측 상태가 충분하면
+        # 그 국면은 정상 학습된 것이므로 보류하지 않는다.
+        # (실전 6종목 확인: 예외 통과분은 모두 예측 상태가 120봉 이상)
+        if counts[predicted_state] < min_per_state:
+            names = [state_mapping[s] for s in range(3)]
+            print(f"⚠️ [{ticker}] 예측 상태({names[predicted_state]})의 봉이 "
+                  f"{min_per_state}개 미만 (분포={counts.tolist()}, "
+                  f"학습 {len(work)}봉). 국면 판별을 보류합니다.")
             return None
 
-        regime = state_mapping[hidden_states[-1]]
+        regime = state_mapping[predicted_state]
+
+        # 확신이 낮으면 방향을 신뢰할 수 없으므로 횡보로 낮춘다.
+        if confidence < HMM_MIN_CONFIDENCE:
+            print(f"⚠️ [{ticker}] 다음봉 상태 확률 {confidence:.2f} < "
+                  f"{HMM_MIN_CONFIDENCE} → 횡보 처리")
+            regime = REGIME_SIDEWAYS
 
         # 분포는 국면 순서(약세/횡보/강세)로 보여야 읽을 수 있다
         spread = [int(counts[s]) for s in (down_state, sideways_state, up_state)]
         print(f"-> [{ticker}] {scope} 국면: {REGIME_TEXT.get(regime, regime)} "
               f"[{model}] ({_describe(work)}, 약세/횡보/강세={spread}, "
-              f"분리도 {min_gap:.2f}, 학습 {len(work)}봉)")
+              f"분리도 {min_gap:.2f}, 확률 {confidence:.2f}, "
+              f"학습 {len(work)}봉)")
         return regime
 
     except Exception as e:
@@ -445,10 +553,8 @@ def analyze_stock_regime(ticker, df, model=MODEL_RSI_VOLUME):
     """개별종목의 상승/횡보/하락 국면 판별
 
     시장 국면이 결정한 전략에 따라 model 이 달라진다.
-      추세장(시장 상승) → MODEL_VWMA  (지표 부호 규칙)
+      추세장(시장 상승) → MODEL_VWMA  (3-State HMM)
       그 외(횡보·하락) → MODEL_MACD  (지표 부호 규칙)
-
-    model 인자가 MODEL_RSI_VOLUME 이면 HMM 판별로 동작한다.
 
     df: 3분봉 누적 DataFrame (fetch_stock_3m_data 결과)
     return: REGIME_UPTREND / REGIME_SIDEWAYS / REGIME_DOWNTREND / None
@@ -460,8 +566,8 @@ def analyze_stock_regime(ticker, df, model=MODEL_RSI_VOLUME):
 
 
 def analyze_stock_regime_vwma(ticker, df):
-    """개별종목 국면 판별 — VWMA 모델 (시장 상승 시 사용)"""
-    return classify_by_threshold(ticker, df, scope="종목", model=MODEL_VWMA)
+    """개별종목 국면 판별 — VWMA 모델 (시장 상승 시 사용, 3-State HMM)"""
+    return classify_3state(ticker, df, scope="종목", model=MODEL_VWMA)
 
 
 def analyze_stock_regime_macd(ticker, df):
