@@ -12,8 +12,9 @@ KOSPI/KOSDAQ 공통으로 쓰는 순수 분석 로직만 담는다.
         Feature2 = log(거래량/거래량MA20) : 거래량 급증·둔화
 
     개별 종목 국면 (analyze_stock_regime, model 인자로 분기)
-        MODEL_VWMA      : VWMA 3-State HMM (가격추세 + 다이버전스)
-        MODEL_MACD      : MACD 라인의 부호 + 지속성 + 크기 게이트
+        MODEL_LGB        : LightGBM 상승확률 (액티브 전략 기본)
+        MODEL_VWMA       : VWMA 3-State HMM (보조 · 비교용)
+        MODEL_MACD       : MACD 라인의 부호 + 지속성 + 크기 게이트
         MODEL_RSI_VOLUME: RSI + 거래량 3-State HMM
 
     시장 국면 (analyze_market_regime) 은 항상 MODEL_RSI_VOLUME HMM 을 쓴다.
@@ -135,7 +136,8 @@ REGIME_SIDEWAYS = "Sideways"      # 중립 → 관망
 REGIME_DOWNTREND = "Downtrend"    # 상대 약화 → 매도
 
 # 개별 종목 판별에 사용할 모델
-MODEL_VWMA = "vwma"               # 액티브 전략 — VWMA 3-State HMM
+MODEL_LGB = "lgb"                 # 액티브 전략 — LightGBM 상승확률
+MODEL_VWMA = "vwma"               # 보조 — VWMA 3-State HMM (비교·대조용)
 MODEL_MACD = "macd"               # 보수적 전략 — MACD 라인 부호
 MODEL_RSI_VOLUME = "rsi_volume"   # 시장 판별과 동일 (RSI + 거래량)
 
@@ -553,20 +555,36 @@ def analyze_stock_regime(ticker, df, model=MODEL_RSI_VOLUME):
     """개별종목의 상승/횡보/하락 국면 판별
 
     시장 국면이 결정한 전략에 따라 model 이 달라진다.
-      추세장(시장 상승) → MODEL_VWMA  (3-State HMM)
+      추세장(시장 상승) → MODEL_LGB   (LightGBM 상승확률)
       그 외(횡보·하락) → MODEL_MACD  (지표 부호 규칙)
 
     df: 3분봉 누적 DataFrame (fetch_stock_3m_data 결과)
     return: REGIME_UPTREND / REGIME_SIDEWAYS / REGIME_DOWNTREND / None
             None 은 봉 부족·판별 불가인 경우다.
     """
+    if model == MODEL_LGB:
+        return analyze_stock_regime_lgb(ticker, df)
     if model in REGIME_INDICATORS:
         return classify_by_threshold(ticker, df, scope="종목", model=model)
     return classify_3state(ticker, df, scope="종목", model=model)
 
 
+def analyze_stock_regime_lgb(ticker, df):
+    """개별종목 국면 판별 — LightGBM 모델 (시장 상승 시 사용)
+
+    lgb_signal 이 market_regime 을 import 하므로 순환 참조를 피하려고
+    여기서는 지연 import 한다. lightgbm 이 없으면 조용히 보류(None)한다.
+    """
+    try:
+        from lgb_signal import analyze_stock_regime_lgb as _analyze
+    except ImportError as exc:
+        print(f"⚠️ [{ticker}] lgb_signal 사용 불가 ({exc}) → 국면 판별 보류")
+        return None
+    return _analyze(ticker, df)
+
+
 def analyze_stock_regime_vwma(ticker, df):
-    """개별종목 국면 판별 — VWMA 모델 (시장 상승 시 사용, 3-State HMM)"""
+    """개별종목 국면 판별 — VWMA 모델 (3-State HMM, 액티브 전략 대조용)"""
     return classify_3state(ticker, df, scope="종목", model=MODEL_VWMA)
 
 

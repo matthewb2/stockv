@@ -1,6 +1,6 @@
 .env
+*.db
+*.json
 venv
 __py_cache__
 scripts/__pycache__*
-
-

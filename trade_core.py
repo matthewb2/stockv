@@ -61,6 +61,7 @@ from market_regime import (  # noqa: F401
     MARKET_REPRESENTATIVE,
     MODEL_MACD,
     MODEL_RSI_VOLUME,
+    MODEL_LGB,
     MODEL_VWMA,
     REGIME_DOWNTREND,
     REGIME_INDICATORS,
@@ -116,21 +117,21 @@ TAKE_PROFIT_PCT = 1.5        # 익절 기준 (%)
 # MIN_BUY_AMOUNT 은 trade_execution 에서 쓰인다 (매수 실행 로직과 함께 이동)
 
 # 전략은 시장 국면 판정 결과로 선택한다. (2종)
-#   시장 상승             → 액티브 전략  : 개별종목을 VWMA 모델로 판별, 매수 허용
+#   시장 상승             → 액티브 전략  : 개별종목을 LightGBM 모델로 판별, 매수 허용
 #   시장 횡보 또는 하락    → 보수적 전략  : 개별종목을 MACD 모델로 판별, 매도 전용
 STRATEGY_ACTIVE = "active"
 STRATEGY_CONSERVATIVE = "conservative"
 
 STRATEGY_LABEL = {
-    STRATEGY_ACTIVE: "액티브 (상승장 · VWMA 모델 · 신규 매수 허용)",
+    STRATEGY_ACTIVE: "액티브 (상승장 · LightGBM 모델 · 신규 매수 허용)",
     STRATEGY_CONSERVATIVE: "보수적 (횡보·하락장 · MACD 모델 · 매도 전용)",
 }
 
 # 전략별로 사용할 개별종목 국면 판별 모델
-#   액티브  → VWMA : 단기/장기 VWMA 스프레드의 부호 + 지속성
-#   보수적  → MACD : MACD 라인의 부호 + 지속성
+#   액티브  → LGB  : N봉 뒤 상승확률 (LightGBM, 학습형)
+#   보수적  → MACD : MACD 라인의 부호 + 지속성 (규칙형)
 STRATEGY_STOCK_MODEL = {
-    STRATEGY_ACTIVE: MODEL_VWMA,
+    STRATEGY_ACTIVE: MODEL_LGB,
     STRATEGY_CONSERVATIVE: MODEL_MACD,
 }
 
