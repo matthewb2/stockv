@@ -1,6 +1,7 @@
 .env
 *.db
 *.json
+*.pyc
 venv
-__py_cache__
+__py_cache__*
 scripts/__pycache__*
