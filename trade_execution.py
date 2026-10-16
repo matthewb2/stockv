@@ -35,6 +35,8 @@ def execute_trade_logic(ticker, curr_price, regime, ctx, allow_buy=True):
         name = ctx.stock_name(ticker)
 
         # 1. 하락 국면 → 보유분 매도
+        # 모니터 프로그램으로 대체
+        """
         if regime == REGIME_DOWNTREND:
             if balance > 0:
                 print(f"📉 [{name}({ticker})] 하락 국면 감지! 매도 진행 "
@@ -46,18 +48,19 @@ def execute_trade_logic(ticker, curr_price, regime, ctx, allow_buy=True):
                            f"수익률: {order_res['pnl_pct']:+.2f}% ({order_res['pnl_krw']:,.0f}원)")
                     ctx.notifier.send("PAPER SELL", msg)
             return
-
+        """
         # 2. 횡보/판단 불가 → 매매 없음
         if regime != REGIME_UPTREND:
             print(f"⏳ [{name}({ticker})] 횡보 또는 판단 보류 상태로 관망합니다.")
             return
 
         # 3. 시장 국면이 상승이 아니면 신규 매수 보류
+        """
         if not allow_buy:
             print(f"⏸️ [{name}({ticker})] 종목은 상승 국면이나 시장 국면이 상승이 "
                   f"아니라 신규 매수를 보류합니다.")
             return
-
+        """
         # 4. 상승 국면 → 매수 검토
         if balance > 0:
             return

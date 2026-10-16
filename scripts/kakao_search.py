@@ -122,7 +122,18 @@ class KakaoSearch:
     def search_stock(self, name, code=None, size=DEFAULT_SIZE):
         """종목 기준 뉴스 검색
 
-        종목명이 있으면 "종목명"을, 없으면 코드로 검색한다.
+        이름과 코드를 같이 넣는다 — "기아 주가" 보다 "기아 000270" 이
+        종목 관련 뉴스 비율이 높다. 이름만 있으면 "이름 주가", 코드만
+        있으면 코드로 검색한다.
         """
-        query = f"{name} 주가" if name else str(code)
+        parts = []
+        if name:
+            parts.append(str(name).strip())
+        if code:
+            parts.append(str(code).strip())
+        if not parts:
+            return []
+        query = " ".join(parts)
+        if len(parts) == 1 and name:
+            query = f"{query} 주가"
         return self.search_news(query, size=size)

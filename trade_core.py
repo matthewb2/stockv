@@ -60,6 +60,7 @@ from market_regime import (  # noqa: F401
     MACD_SLOW,
     MARKET_REPRESENTATIVE,
     MODEL_MACD,
+    MODEL_MACD_HMM,
     MODEL_RSI_VOLUME,
     MODEL_LGB,
     MODEL_VWMA,
@@ -124,7 +125,7 @@ STRATEGY_CONSERVATIVE = "conservative"
 
 STRATEGY_LABEL = {
     STRATEGY_ACTIVE: "액티브 (상승장 · LightGBM 모델 · 신규 매수 허용)",
-    STRATEGY_CONSERVATIVE: "보수적 (횡보·하락장 · MACD 모델 · 매도 전용)",
+    STRATEGY_CONSERVATIVE: "보수적 (횡보·하락장 · MACD 모델 · 신규 매수 허용)",
 }
 
 # 전략별로 사용할 개별종목 국면 판별 모델
@@ -145,7 +146,7 @@ MARKET_LABEL = {
     "KOSPI": "코스피",
     "KOSDAQ": "코스닥",
 }
-MAX_CODES = 3               # 사이클당 분석 종목 수 (거래대금 상위)
+MAX_CODES = 10               # 사이클당 분석 종목 수 
 
 # KRX 정보데이터 시세 파일(cp949). 각 줄의 첫 필드가 종목코드다.
 MARKET_FILES = {
@@ -166,7 +167,7 @@ MARKET_FILES = {
 # 정적 목록은 코스피 이전분을 반영한 최신본이다. 조건식 결과가 목록에 없는
 # 코드가 있어도 필터링하지 않고, 0개일 때만 경고를 낸다.
 MARKET_SETTINGS = {
-    "KOSDAQ": {"seq": DEFAULT_SEQ, "max_codes": 100, "filter_by_list": False},
+    "KOSDAQ": {"seq": DEFAULT_SEQ, "max_codes": MAX_CODES, "filter_by_list": False},
     "KOSPI": {"seq": DEFAULT_SEQ + 1, "max_codes": MAX_CODES, "filter_by_list": False},
 }
 
@@ -418,7 +419,7 @@ def run_cycle(scanner, ctx, seq, max_codes):
         code = item['code']
         if item.get('name'):
             ctx.name_cache[code] = item['name']
-
+    
     if ctx.filter_by_list:
         # 조건검색식이 시장을 구분하지 않는 경우: 정적 목록으로 자기 시장만 남긴다
         items = [it for it in all_items if get_stock_market(it['code']) == market]
@@ -442,7 +443,7 @@ def run_cycle(scanner, ctx, seq, max_codes):
         if items and known == 0:
             print(f"{Color.RED}🚨 [{label}] seq={seq} 결과 중 {label} 종목으로 확인되는 코드가 0개입니다. "
                   f"HTS 조건식 설정(대상 시장/정렬/상한)을 확인하세요.{Color.RESET}")
-
+    
     # 4) 종목별 상승/횡보/하락 판별 후 매매 실행
     for idx, item in enumerate(items, start=1):
         code = item['code']
@@ -450,7 +451,7 @@ def run_cycle(scanner, ctx, seq, max_codes):
         holding = code in ctx.holding_codes()
         print(f"\n---------------------------------------- ({idx}/{len(items)})")
         print(f"🔎 분석 중: {name}({code}) "
-              f"거래대금 {item.get('trade_amt', 0) / 1e8:.1f}억"
+              f"거래대금 {item.get('trade_amt', 0) / 1e8:.2f}억"
               f"{' [보유 중]' if holding else ''}")
 
         try:
@@ -574,7 +575,7 @@ def main(argv=None, market="KOSPI", seq=None, max_codes=None):
     )
 
     print(f"{Color.BOLD}■ 대상 시장: {label} ({market}){Color.RESET}")
-    print(f"   조건검색식 : seq={args.seq} (HTS {args.seq + 1}번 조건식, {label} 전용)")
+    print(f"   조건검색식 : seq={args.seq} (HTS {int(args.seq) + 1}번 조건식, {label} 전용)")
     print(f"   분석 종목 : 최대 {args.max_codes}종목")
     print(f"   잔고 파일 : {args.balance_file}")
     print(f"   주문 파일 : {args.orders_file}")

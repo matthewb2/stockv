@@ -113,6 +113,14 @@ VWMA_HMM_FAST = 5      # VWMA 모멘텀 계산용 단기 VWMA 기간
 HMM_3STATE_MIN_SEPARATION_PER_MODEL = {
     "rsi_volume": 0.15,
     "vwma": 0.02,
+    # MACD+HMM 실측(kospi_chart.db, 30종목 학습 성공, 최소 평균 간격):
+    #   0.010, 0.010, 0.013, 0.030 ... 중앙 0.055, 최대 2.647
+    # 게이트 미적용은 30/30 정상 수렴·빈 상태 0 이었으므로, 이 값은 라벨
+    # 신뢰도가 아니라 '거의 겹치는 군집'을 걸러내는 최저선으로만 쓴다.
+    # 0.02 는 아래 3종목(005930, 009830, 012450 — 간격 0.010~0.013)을
+    # 판별 보류로 넘기고 27/30 을 남기는 지점이다. VWMA 와 동일 값을 써서
+    # 모델마다 기준이 다르게 보이지 않게 한다.
+    "macd_hmm": 0.02,
 }
 
 # 상태 정렬에 쓸 Feature 인덱스. 정답지 있는 국면 전환형 합성 데이터
@@ -121,6 +129,9 @@ HMM_3STATE_MIN_SEPARATION_PER_MODEL = {
 REGIME_SORT_AXIS = {
     "rsi_volume": 0,
     "vwma": 0,
+    # MACD+HMM 두 축(라인/히스토그램) 실측(30종목): 축 0 으로 정렬한 결과
+    # 라벨 뒤집힘 0건, 축 1 은 15~29건. 따라서 Feature1 정렬을 쓴다.
+    "macd_hmm": 0,
 }
 
 HMM_MIN_CONFIDENCE = 0.45  # 다음봉 상태 확률 하한 (미달이면 횡보로 간주)
@@ -138,7 +149,8 @@ REGIME_DOWNTREND = "Downtrend"    # 상대 약화 → 매도
 # 개별 종목 판별에 사용할 모델
 MODEL_LGB = "lgb"                 # 액티브 전략 — LightGBM 상승확률
 MODEL_VWMA = "vwma"               # 보조 — VWMA 3-State HMM (비교·대조용)
-MODEL_MACD = "macd"               # 보수적 전략 — MACD 라인 부호
+MODEL_MACD_HMM = "macd_hmm"       # 보유종목 모니터 — MACD 3-State HMM
+MODEL_MACD = "macd"               # 보수적 전략 — MACD 라인 부호 (규칙 기반)
 MODEL_RSI_VOLUME = "rsi_volume"   # 시장 판별과 동일 (RSI + 거래량)
 
 # 국면 판정 결과의 한글 표기
@@ -307,9 +319,30 @@ def build_features_vwma(work):
     return work
 
 
+def build_features_macd_hmm(work):
+    """MACD 라인 + 히스토그램 (보유종목 모니터용 3-State HMM)
+
+    둘 다 종가로 나눠 가격 스케일을 없앤다. 그대로 쓰면 주가 수준이 다른
+    종목마다 피처 분산이 달라져 표준화로도 같은 형태를 만들 수 없다.
+
+    Feature1(라인)은 높을수록 강세, Feature2(히스토그램)은 매수 우세다.
+    30종목 실측에서 라인 정렬 축 0 은 라벨 뒤집힘 0건, 빈 상태 0건이었고
+    축 1 은 15~29건의 뒤집힘을 냈다. 따라서 정렬 축은 Feature1 이다.
+    """
+    macd_line, _, hist = calculate_macd(work["close"])
+    base = work["close"].replace(0, np.nan)
+
+    work["d_MACD"] = macd_line
+    work["d_MACDHist"] = hist
+    work["Feature1"] = macd_line / base * 100.0
+    work["Feature2"] = hist / base * 100.0
+    return work
+
+
 FEATURE_BUILDERS = {
     MODEL_RSI_VOLUME: build_features_rsi_volume,
     MODEL_VWMA: build_features_vwma,
+    MODEL_MACD_HMM: build_features_macd_hmm,
 }
 
 
@@ -591,6 +624,15 @@ def analyze_stock_regime_vwma(ticker, df):
 def analyze_stock_regime_macd(ticker, df):
     """개별종목 국면 판별 — MACD 모델 (시장 횡보·하락 시 사용)"""
     return classify_by_threshold(ticker, df, scope="종목", model=MODEL_MACD)
+
+
+def analyze_stock_regime_macd_hmm(ticker, df):
+    """개별종목 국면 판별 — MACD 3-State HMM (보유종목 모니터용)
+
+    규칙 기반 MODEL_MACD 와 구분되는 HMM 경로다. 피처는 같은 MACD 를 쓰지만
+    판별 방식이 전이확률 기반 3-상태 추정이다.
+    """
+    return classify_3state(ticker, df, scope="종목", model=MODEL_MACD_HMM)
 
 
 def analyze_market_regime(ticker, df):

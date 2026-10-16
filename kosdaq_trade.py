@@ -37,7 +37,7 @@ import trade_core
 
 MARKET = "KOSDAQ"
 SEQ = 0            # HTS 조건검색 1번 = 코스닥 거래대금 상위
-MAX_CODES = 100    # 사이클당 분석 종목 수
+MAX_CODES = 10    # 사이클당 분석 종목 수
 
 
 def main(argv=None):

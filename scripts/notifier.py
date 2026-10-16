@@ -3,7 +3,7 @@ import os
 
 class DiscordNotifier:
     def __init__(self):
-        self.url = os.getenv('DISCORD_WEBHOOK_URL')
+        self.url = os.getenv('DISCORD_WEBHOOK_STOCK_URL')
 
     def send(self, title, message):
         payload = {"embeds": [{"title": title, "description": message, "color": 3447003}]}
@@ -19,8 +19,8 @@ class ConsoleNotifier:
 
 def build_notifier():
     """웹훅 설정 여부에 따라 알림기를 선택"""
-    if os.getenv('DISCORD_WEBHOOK_URL'):
+    if os.getenv('DISCORD_WEBHOOK_STOCK_URL'):
         return DiscordNotifier()
 
-    print("ℹ️ DISCORD_WEBHOOK_URL이 없어 알림을 콘솔로 출력합니다.")
+    print("ℹ️ DISCORD_WEBHOOK_STOCK_URL이 없어 알림을 콘솔로 출력합니다.")
     return ConsoleNotifier()
