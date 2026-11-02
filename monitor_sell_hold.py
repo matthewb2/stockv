@@ -258,10 +258,10 @@ def print_summary(ctx, results):
         op = r.get("opinion")
         name = resolve_name(ctx, r['ticker'])
         op_text = op.get("action", "-") if op else "-"
-        print(f"{r['ticker']:<7}{name:<7}{r['qty']:>6}"
-              f"{_fmt_price(r['avg']):>11}{_fmt_price(r['price']):>11}"
-              f"{r['return_text']:>6}"
-              f"{REGIME_DISPLAY.get(r['regime'], str(r['regime'])):>14}"
+        print(f"{r['ticker']:<7}{name:<14}{r['qty']:>6}"
+              f"{_fmt_price(r['avg']):>10}{_fmt_price(r['price']):>10}"
+              f"{r['return_text']:>9}"
+              f"{REGIME_DISPLAY.get(r['regime'], str(r['regime'])):>11}"
               f"{op_text:>6}"
               f"{'매도' if r['sold'] else '-':>8}")
     print("=" * 84)

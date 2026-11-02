@@ -58,6 +58,43 @@ LONG_TICKER = "233740"      # KODEX 레버리지
 INVERSE_TICKER = "251340"   # KODEX 코스피인버스
 
 
+
+
+# ==============================
+# 💰 포트폴리오 평가금액 계산 및 출력
+# ==============================
+def print_portfolio_valuation(native, paper):
+    """예수금과 보유 주식의 실시간 시가를 반영한 총 평가금액을 계산하여 출력합니다."""
+    cash = paper.krw
+    stock_value = 0
+    holdings_info = []
+
+    # 확인 대상 티커 목록 (기본 레버리지/인버스 + 잔고에 존재하는 기타 티커)
+    tickers_to_check = [LONG_TICKER, INVERSE_TICKER]
+    if hasattr(paper, "holdings") and isinstance(paper.holdings, dict):
+        for t in paper.holdings.keys():
+            if t not in tickers_to_check:
+                tickers_to_check.append(t)
+
+    for ticker in tickers_to_check:
+        qty = paper.get_balance(ticker)
+        if qty > 0:
+            price = get_current_price(native, ticker)
+            val = qty * price
+            stock_value += val
+            holdings_info.append(f"    - [{ticker}] {qty}주 @ {price:,.0f}원 = {val:,.0f}원")
+
+    total_eval = cash + stock_value
+    print(f"    💵 예수금: {cash:,.0f}원")
+    if holdings_info:
+        print(f"    📈 보유 주식 평가액: {stock_value:,.0f}원")
+        for info in holdings_info:
+            print(info)
+    else:
+        print(f"    📈 보유 주식 평가액: 0원")
+    print(f"    💎 총 평가금액 (자산 총액): {total_eval:,.0f}원")
+
+
 # ==============================
 # 💱 매매 실행 (로컬 모의매매)
 # ==============================
@@ -259,7 +296,8 @@ def main(argv=None):
         print(f"{Color.RED}[에러 발생] 매매 실행 중 예외 발생: {e}{Color.RESET}")
 
     print(f"\n{Color.BOLD}📋 최종 자산 현황{Color.RESET}")
-    paper.get_status()
+    #paper.get_status()
+    print_portfolio_valuation(native, paper)
     if not args.dry_run:
         print(f"   체결 내역: {args.orders_file}")
 

@@ -11,13 +11,14 @@ ETF 국면 예측 LightGBM 전략 — 로컬 paper 모의매매.
   - 그 사이    : 관망
 
 - 시세 : 실전 계좌(KISNative) 현재가만 조회한다. 실주문/한투 모의계좌는 쓰지 않는다.
+
 - 주문 : KisPaperTrader 기반 로컬 모의매매
          balance_etf.json / orders_etf.json 을 쓴다 (직접 편집 금지).
 - 데이터 : yfinance 일봉 (참조 지수 + 학습 타겟 ETF)
 
 사용법:
     python etf_lstm.py
-    python etf_lstm.py --dry-run              # 주문 없이 판정만 출력
+    python etf_lstm.py --dry-run                 # 주문 없이 판정만 출력
     python etf_lstm.py --initial-krw 10000000
 """
 import argparse
@@ -81,6 +82,46 @@ STRATEGIES = [
     dict(ref_ticker="GC=F", target_ticker_yf="132030.KS",
          buy_ticker_up="132030", sell_ticker_up="280940", lookback=15),
 ]
+
+
+# ==============================
+# 💰 포트폴리오 평가금액 계산 및 출력
+# ==============================
+def print_portfolio_valuation(native, paper):
+    """예수금과 보유 주식의 실시간 시가를 반영한 총 평가금액을 계산하여 출력합니다."""
+    cash = paper.krw
+    stock_value = 0
+    holdings_info = []
+
+    # 전략에 정의된 모든 티커 목록 및 잔고에 존재하는 기타 티커 수집
+    tickers_to_check = set()
+    for s in STRATEGIES:
+        tickers_to_check.add(s["buy_ticker_up"])
+        tickers_to_check.add(s["sell_ticker_up"])
+        if "buy_ticker_down" in s:
+            tickers_to_check.add(s["buy_ticker_down"])
+            
+    if hasattr(paper, "holdings") and isinstance(paper.holdings, dict):
+        for t in paper.holdings.keys():
+            tickers_to_check.add(t)
+
+    for ticker in tickers_to_check:
+        qty = paper.get_balance(ticker)
+        if qty > 0:
+            price = get_current_price(native, ticker)
+            val = qty * price
+            stock_value += val
+            holdings_info.append(f"    - [{ticker}] {qty}주 @ {price:,.0f}원 = {val:,.0f}원")
+
+    total_eval = cash + stock_value
+    print(f"    💵 예수금: {cash:,.0f}원")
+    if holdings_info:
+        print(f"    📈 보유 주식 평가액: {stock_value:,.0f}원")
+        for info in holdings_info:
+            print(info)
+    else:
+        print(f"    📈 보유 주식 평가액: 0원")
+    print(f"    💎 총 평가금액 (자산 총액): {total_eval:,.0f}원")
 
 
 # ==============================
@@ -331,7 +372,10 @@ def main(argv=None):
     print(f"   매수 비율 : 예수금의 {BUY_RATE * 100:.0f}%")
     if args.dry_run:
         print(f"   {Color.CYAN}[dry-run] 주문을 넣지 않습니다.{Color.RESET}")
-    paper.get_status()
+    
+    print(f"\n{Color.BOLD}📋 초기 자산 현황{Color.RESET}")
+    #paper.get_status()
+    print_portfolio_valuation(native, paper)
 
     for params in STRATEGIES:
         try:
@@ -341,7 +385,8 @@ def main(argv=None):
                   f"에러: {e}{Color.RESET}")
 
     print(f"\n{Color.BOLD}📋 최종 자산 현황{Color.RESET}")
-    paper.get_status()
+    #paper.get_status()
+    print_portfolio_valuation(native, paper)
     if not args.dry_run:
         print(f"   체결 내역: {args.orders_file}")
 
